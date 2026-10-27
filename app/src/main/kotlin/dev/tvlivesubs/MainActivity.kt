@@ -17,13 +17,18 @@ import android.widget.TextView
  */
 class MainActivity : Activity() {
 
+    /** `adb shell am start ... --ez meter true` adds the diagnostic level strip. */
+    private var meter = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        meter = intent.getBooleanExtra(CaptureService.EXTRA_METER, false)
         toggle()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        meter = intent.getBooleanExtra(CaptureService.EXTRA_METER, false)
         toggle()
     }
 
@@ -45,6 +50,7 @@ class MainActivity : Activity() {
             setContentView(TextView(this).apply {
                 text = "Missing permissions. Run:\n\n" + missing.joinToString("\n")
                 textSize = 24f
+                setBackgroundColor(0xEE000000.toInt())
                 setPadding(64, 64, 64, 64)
             })
             return
@@ -61,7 +67,8 @@ class MainActivity : Activity() {
             startForegroundService(
                 Intent(this, CaptureService::class.java)
                     .putExtra(CaptureService.EXTRA_RESULT_CODE, resultCode)
-                    .putExtra(CaptureService.EXTRA_DATA, data),
+                    .putExtra(CaptureService.EXTRA_DATA, data)
+                    .putExtra(CaptureService.EXTRA_METER, meter),
             )
         } else {
             Log.w("LevelMeter", "projection consent denied (resultCode=$resultCode)")

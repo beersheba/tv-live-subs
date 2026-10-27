@@ -31,9 +31,9 @@ async def main() -> None:
         async def reader() -> None:
             async for m in ws:
                 d = json.loads(m)
-                if d["type"] != "ready":
-                    print(f"[{time.monotonic() - t0:5.1f}s] {d['type']:7} #{d['id']} {d['text']}\n"
-                          f"{'':17}-> {d['translation']}", flush=True)
+                if d["type"] == "commit":
+                    print(f"[{time.monotonic() - t0:5.1f}s] #{d['id']} {d['text']}\n"
+                          f"{'':9}-> {d['translation']}", flush=True)
 
         r = asyncio.create_task(reader())
         chunk = 3200  # 100 ms

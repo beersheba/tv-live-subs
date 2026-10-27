@@ -25,6 +25,8 @@ CACHE = Path(os.environ.get("TVSUBS_CACHE", Path.home() / ".cache" / "tvsubs"))
 # Hebrew gets the ivrit-ai fine-tune, everything else the stock multilingual model.
 DEFAULT_MODELS = {"he": "ivrit-ai/whisper-large-v3-turbo-ggml::ggml-model.bin"}
 FALLBACK_MODEL = "ggerganov/whisper.cpp::ggml-large-v3-turbo.bin"
+# Fine-tunes like ivrit-ai call everything Hebrew, so language ID needs a stock model; small is enough.
+DETECT_MODEL = "ggerganov/whisper.cpp::ggml-small.bin"
 
 
 def resolve_model(spec: str) -> Path:
@@ -38,6 +40,16 @@ def resolve_model(spec: str) -> Path:
         print(f"[stt] downloading {spec}", flush=True)
         hf_hub_download(repo, filename, local_dir=target)
     return target / filename
+
+
+def _wav(audio: np.ndarray) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16_000)
+        w.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+    return buf.getvalue()
 
 
 class _Server:
@@ -73,13 +85,14 @@ class _Server:
 
 class Transcriber:
     def __init__(self, models: dict[str, str], fallback: str, threads: int,
-                 binary: str = "whisper-server"):
+                 binary: str = "whisper-server", detect_model: str = DETECT_MODEL):
         if shutil.which(binary) is None:
             raise RuntimeError("whisper-server not found; `brew install whisper-cpp`")
         self._models = models
         self._fallback = fallback
         self._threads = threads
         self._binary = binary
+        self._detect_model = detect_model
         self._servers: dict[str, _Server] = {}
         self._lock = threading.Lock()
 
@@ -87,23 +100,36 @@ class Transcriber:
         self._get(lang)
 
     def _get(self, lang: str) -> _Server:
-        spec = self._models.get(lang, self._fallback)
+        return self._server(self._models.get(lang, self._fallback))
+
+    def _server(self, spec: str) -> _Server:
         with self._lock:
             if spec not in self._servers:
                 print(f"[stt] starting whisper-server for {spec}", flush=True)
                 self._servers[spec] = _Server(resolve_model(spec), self._threads, self._binary)
             return self._servers[spec]
 
+    def preload_detector(self) -> None:
+        self._server(self._detect_model)
+
+    def detect(self, audio: np.ndarray) -> tuple[str, float]:
+        """Most likely spoken language (ISO 639-1) and its probability."""
+        r = self._server(self._detect_model).client.post(
+            "/inference",
+            files={"file": ("a.wav", _wav(audio), "audio/wav")},
+            data={"language": "auto", "response_format": "verbose_json", "temperature": "0.0"},
+        )
+        r.raise_for_status()
+        probs = r.json().get("language_probabilities") or {}
+        if not probs:
+            return "", 0.0
+        lang = max(probs, key=probs.get)
+        return lang, float(probs[lang])
+
     def transcribe(self, audio: np.ndarray, lang: str, final: bool) -> str:
-        buf = io.BytesIO()
-        with wave.open(buf, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16_000)
-            w.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
         r = self._get(lang).client.post(
             "/inference",
-            files={"file": ("a.wav", buf.getvalue(), "audio/wav")},
+            files={"file": ("a.wav", _wav(audio), "audio/wav")},
             data={"language": lang, "response_format": "json", "temperature": "0.0"},
         )
         r.raise_for_status()

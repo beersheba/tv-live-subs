@@ -14,60 +14,101 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.IBinder
 import android.util.Log
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class CaptureService : Service() {
 
+    enum class State { OFF, ACTIVE, PAUSED }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var projection: MediaProjection? = null
-    private var captureJob: Job? = null
-    private var overlay: LevelOverlay? = null
+    private var activeJob: Job? = null
+    private var overlay: SubtitleOverlay? = null
+    private var showMeter = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> stopSelf()
+            ACTION_TOGGLE -> if (state == State.ACTIVE) pause() else if (state == State.PAUSED) resume()
+            ACTION_SUMMON -> if (state == State.ACTIVE) overlay?.summon()
+            ACTION_PAUSE -> if (state == State.ACTIVE) pause()
+            ACTION_RESUME -> if (state == State.PAUSED) resume()
+            else -> if (state == State.OFF) startProjection(intent) else resume()
         }
-        if (running) return START_NOT_STICKY
+        return START_NOT_STICKY
+    }
 
+    private fun startProjection(intent: Intent?) {
         // Must be in the foreground before getMediaProjection().
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startForeground(NOTIFICATION_ID, buildNotification("Capturing audio"))
 
         @Suppress("DEPRECATION")
         val data = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
-        if (data == null) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        projection = mpm.getMediaProjection(resultCode, data)?.also {
+        projection = data?.let { mpm.getMediaProjection(resultCode, it) }?.also {
             it.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() = stopSelf()
             }, null)
         }
         if (projection == null) {
             stopSelf()
-            return START_NOT_STICKY
+            return
         }
-
-        running = true
-        overlay = LevelOverlay(this).also { it.show() }
-        captureJob = scope.launch { capture(projection!!) }
-        return START_NOT_STICKY
+        showMeter = intent?.getBooleanExtra(EXTRA_METER, false) ?: false
+        resume()
     }
 
-    private suspend fun capture(projection: MediaProjection) = withContext(Dispatchers.IO) {
+    /** Starts recording, the server link and the overlay. The projection stays alive across pauses. */
+    private fun resume() {
+        val projection = projection ?: return
+        state = State.ACTIVE
+        notify("Capturing audio")
+        activeJob = scope.launch {
+            val overlay = SubtitleOverlay(this@CaptureService, showMeter, onPause = ::pause).also { it.show() }
+            this@CaptureService.overlay = overlay
+            val client = TranslationClient(BuildConfig.SERVER_URL, BuildConfig.SRC_LANG, BuildConfig.DST_LANG, this)
+                .also { it.start() }
+            try {
+                val presenter = SubtitlePresenter(this, client.commits)
+                launch {
+                    combine(presenter.visible, client.link) { lines, link -> lines to link }
+                        .collect { (lines, link) -> overlay.setSubtitle(lines, link) }
+                }
+                capture(projection, client, overlay)
+            } finally {
+                client.stop()
+                overlay.hide()
+                this@CaptureService.overlay = null
+            }
+        }
+    }
+
+    /** Releases everything but the projection, so resume() needs no consent dialog. */
+    private fun pause() {
+        activeJob?.cancel()
+        activeJob = null
+        state = State.PAUSED
+        notify("Paused")
+    }
+
+    private suspend fun capture(
+        projection: MediaProjection,
+        client: TranslationClient,
+        overlay: SubtitleOverlay,
+    ) = withContext(Dispatchers.IO) {
         val config = AudioPlaybackCaptureConfiguration.Builder(projection)
             .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
             .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
@@ -100,6 +141,8 @@ class CaptureService : Service() {
         }
 
         val pcm = ShortArray(chunkSamples)
+        val bytes = ByteArray(chunkSamples * 2)
+        val shortView = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
         var level = AudioLevel()
         var lastLog = 0L
         record.startRecording()
@@ -111,8 +154,11 @@ class CaptureService : Service() {
                     Log.e(TAG, "read error $n")
                     break
                 }
+                shortView.clear()
+                shortView.put(pcm, 0, n)
+                client.sendAudio(bytes, n * 2)
                 level = AudioLevel.measure(pcm, n, level.silentMs, CHUNK_MS.toLong())
-                withContext(Dispatchers.Main.immediate) { overlay?.update(level) }
+                withContext(Dispatchers.Main.immediate) { overlay.update(level) }
 
                 val now = System.currentTimeMillis()
                 if (now - lastLog >= 1000) {
@@ -127,29 +173,36 @@ class CaptureService : Service() {
     }
 
     override fun onDestroy() {
-        running = false
+        state = State.OFF
         scope.cancel()
-        overlay?.hide()
         projection?.stop()
         super.onDestroy()
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(text: String): Notification {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Capture", NotificationManager.IMPORTANCE_LOW),
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("TV Live Subs")
-            .setContentText("Capturing audio")
+            .setContentText(text)
             .setSmallIcon(R.drawable.ic_launcher)
             .build()
     }
 
+    private fun notify(text: String) =
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
+
     companion object {
         const val ACTION_STOP = "dev.tvlivesubs.STOP"
+        const val ACTION_TOGGLE = "dev.tvlivesubs.TOGGLE"
+        const val ACTION_PAUSE = "dev.tvlivesubs.PAUSE"
+        const val ACTION_SUMMON = "dev.tvlivesubs.SUMMON"
+        const val ACTION_RESUME = "dev.tvlivesubs.RESUME"
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_DATA = "data"
+        const val EXTRA_METER = "meter"
 
         private const val TAG = "LevelMeter"
         private const val CHANNEL_ID = "capture"
@@ -158,7 +211,9 @@ class CaptureService : Service() {
         private const val CHUNK_MS = 100
 
         @Volatile
-        var running = false
+        var state = State.OFF
             private set
+
+        val running: Boolean get() = state != State.OFF
     }
 }

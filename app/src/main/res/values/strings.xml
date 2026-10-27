@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">TV Live Subs</string>
+    <string name="key_service_description">Remote-control shortcut to pause and resume subtitles</string>
 </resources>
