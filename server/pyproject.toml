@@ -1,0 +1,24 @@
+[project]
+name = "tvsubs-server"
+version = "0.1.0"
+description = "Streaming STT + translation WebSocket server for tv-live-subs"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "faster-whisper>=1.1",  # only for its bundled Silero VAD
+    "ctranslate2>=4.5",
+    "transformers>=4.45",
+    "sentencepiece>=0.2",
+    "numpy>=1.26",
+    "websockets>=14",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+tvsubs-server = "tvsubs_server.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tvsubs_server"]
