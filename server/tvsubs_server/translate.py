@@ -12,10 +12,16 @@ from huggingface_hub import snapshot_download
 from transformers import AutoTokenizer
 
 from .langs import nllb
+from .prompts import system_prompt, user_prompt
+from .terms import TermStore
 
 _SENT_END = re.compile(r"(?<=[.!?…])\s+")
 CACHE_MAX = 512
-BLOCK_SECONDS = 15.0
+# How long Gemini is skipped (NLLB covers) after a failure, by cause.
+BLOCK_TIMEOUT_S = 4.0
+BLOCK_QUOTA_S = 30.0
+BLOCK_OTHER_S = 8.0
+MIN_WORDS_FOR_LLM = 3  # shorter fragments aren't worth a request
 
 TOKENIZER = "facebook/nllb-200-distilled-600M"
 CT2_REPO = "JustFrederik/nllb-200-distilled-600M-ct2-int8"
@@ -56,32 +62,33 @@ class NllbTranslator:
 class GeminiTranslator:
     """Gemini via REST: context-aware, glossary-aware, falls back to NLLB on any failure."""
 
-    LANG_NAMES = {"he": "Hebrew", "ru": "Russian", "en": "English", "ar": "Arabic", "uk": "Ukrainian",
-                  "fr": "French", "de": "German", "es": "Spanish", "it": "Italian",
-                  "pt": "Portuguese", "tr": "Turkish", "pl": "Polish", "fa": "Persian", "am": "Amharic"}
-
-    def __init__(self, api_key: str, model: str, fallback: NllbTranslator, glossary: dict[str, str],
-                 thinking: str = "off", timeout: float = 4.0):
+    def __init__(self, api_key: str, model: str, fallback: NllbTranslator, terms: TermStore,
+                 thinking: str = "off", timeout: float = 3.5, rpm: float = 14.0):
         self._fallback = fallback
-        self._glossary = glossary
+        self._terms = terms
         self._model = model
         self._thinking = thinking
+        # Token bucket: spreads a per-minute quota evenly instead of burning it and then falling back
+        # for half a minute. rpm <= 0 disables the limit (paid tier).
+        self._rpm = rpm
+        self._tokens = min(4.0, rpm)
+        self._refilled = time.monotonic()
         self._blocked_until = 0.0  # after a failure Gemini is skipped for a while (NLLB covers)
         self._http = httpx.Client(
             base_url="https://generativelanguage.googleapis.com/v1beta",
             headers={"x-goog-api-key": api_key}, timeout=timeout,
         )
 
-    def _system(self, src: str, dst: str) -> str:
-        s, d = self.LANG_NAMES.get(src, src), self.LANG_NAMES.get(dst, dst)
-        terms = "\n".join(f"- {k} = {v}" for k, v in self._glossary.items())
-        return (
-            f"You are a live TV subtitle translator, {s} to {d}. The input is automatic speech "
-            f"recognition output and may contain recognition errors; use the previous lines as context "
-            f"to fix obvious ones. Translate ONLY the last line into natural, concise spoken {d}. "
-            f"Keep proper names correct. Output the translation and nothing else.\n"
-            + (f"Glossary (always use these renderings):\n{terms}" if terms else "")
-        )
+    def _take(self) -> bool:
+        if self._rpm <= 0:
+            return True
+        now = time.monotonic()
+        self._tokens = min(4.0, self._tokens + (now - self._refilled) * self._rpm / 60)
+        self._refilled = now
+        if self._tokens < 1:
+            return False
+        self._tokens -= 1
+        return True
 
     def _gen_config(self) -> dict:
         cfg: dict = {"temperature": 0.2, "maxOutputTokens": 300}
@@ -94,13 +101,12 @@ class GeminiTranslator:
     def translate(self, text: str, src: str, dst: str, context: tuple[str, ...] = ()) -> str:
         if not text or src == dst:
             return text
-        if time.monotonic() < self._blocked_until:
+        if time.monotonic() < self._blocked_until or len(text.split()) < MIN_WORDS_FOR_LLM or not self._take():
             return self._fallback.translate(text, src, dst, context)
-        prompt = ("Previous lines (context only):\n" + "\n".join(context) + "\n\n" if context else "") \
-            + f"Last line to translate:\n{text}"
+        prompt = user_prompt(text, context, self._terms.learned_for(src))
         try:
             r = self._http.post(f"/models/{self._model}:generateContent", json={
-                "systemInstruction": {"parts": [{"text": self._system(src, dst)}]},
+                "systemInstruction": {"parts": [{"text": system_prompt(src, dst, self._terms.static_for(src))}]},
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
                 "generationConfig": self._gen_config(),
             })
@@ -109,22 +115,12 @@ class GeminiTranslator:
             if out:
                 return out
         except Exception as e:  # noqa: BLE001 - any failure must not stall subtitles
-            self._blocked_until = time.monotonic() + BLOCK_SECONDS
             code = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else type(e).__name__
-            print(f"[mt] gemini failed ({code}); NLLB for the next {BLOCK_SECONDS:.0f}s", flush=True)
+            block = BLOCK_QUOTA_S if code == 429 else BLOCK_TIMEOUT_S if isinstance(e, httpx.TimeoutException) \
+                else BLOCK_OTHER_S
+            self._blocked_until = time.monotonic() + block
+            print(f"[mt] gemini failed ({code}); NLLB for the next {block:.0f}s", flush=True)
         return self._fallback.translate(text, src, dst, context)
-
-
-def load_glossary(path: str | None) -> dict[str, str]:
-    """`source = target` per line; '#' comments."""
-    out: dict[str, str] = {}
-    if path and os.path.isfile(path):
-        for line in open(path, encoding="utf-8"):
-            line = line.split("#", 1)[0].strip()
-            if "=" in line:
-                k, v = (x.strip() for x in line.split("=", 1))
-                out[k] = v
-    return out
 
 
 def load_env(path: str = ".env") -> None:

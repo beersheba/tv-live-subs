@@ -1,4 +1,5 @@
-# source = target (any language pair; applied via the translator prompt)
+# source = target, grouped by SOURCE language in [sections] (default: he). Used in translator prompts.
+[he]
 מילואימניקים = резервисты
 מילואימניק = резервист
 צה"ל = ЦАХАЛ
@@ -13,3 +14,6 @@
 מחבלים = террористы
 פיקוד העורף = Командование тыла
 בג"ץ = Верховный суд (БАГАЦ)
+תקשורת = СМИ (в новостном контексте)
+מדגם = экзит-пол
+אולפן = студия

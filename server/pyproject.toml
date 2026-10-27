@@ -13,6 +13,9 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.optional-dependencies]
+local = ["mlx-lm>=0.30; sys_platform == 'darwin' and platform_machine == 'arm64'"]
+
 [project.scripts]
 tvsubs-server = "tvsubs_server.__main__:main"
 

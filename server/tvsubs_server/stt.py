@@ -126,11 +126,12 @@ class Transcriber:
         lang = max(probs, key=probs.get)
         return lang, float(probs[lang])
 
-    def transcribe(self, audio: np.ndarray, lang: str, final: bool) -> str:
+    def transcribe(self, audio: np.ndarray, lang: str, final: bool, prompt: str = "") -> str:
         r = self._get(lang).client.post(
             "/inference",
             files={"file": ("a.wav", _wav(audio), "audio/wav")},
-            data={"language": lang, "response_format": "json", "temperature": "0.0"},
+            data={"language": lang, "response_format": "json", "temperature": "0.0",
+                  **({"prompt": prompt} if prompt else {})},
         )
         r.raise_for_status()
         return r.json().get("text", "").strip()

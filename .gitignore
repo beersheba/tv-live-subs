@@ -26,3 +26,6 @@ local.properties
 __pycache__/
 *.pyc
 .env
+server/recordings/
+server/learned_terms.tsv
+learned_terms.tsv

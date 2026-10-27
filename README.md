@@ -24,3 +24,23 @@ adb -s $DEV logcat -s LevelMeter
 ```
 
 Launching the app toggles capture (start → MediaProjection consent dialog; run again → stop).
+
+## Server (Mac, `server/`)
+
+Streaming STT + translation over WebSocket. Needs `brew install whisper-cpp ffmpeg uv`.
+
+```sh
+cd server
+cp .env.example .env            # optional: GEMINI_API_KEY for --translator gemini
+uv sync --extra local           # mlx-lm for the local translator (Apple Silicon)
+uv run tvsubs-server --preload auto he
+```
+
+- **STT:** whisper.cpp (`whisper-server`, Metal). Hebrew uses the ivrit-ai fine-tune; other languages the stock
+  large-v3-turbo. The source language is detected per segment by a small stock model (`--languages` limits it).
+- **Translation (`--translator auto`):** local Gemma 4 E4B via mlx-lm if downloaded, else Gemini if a key is set,
+  else NLLB. `--local-model` picks a bigger one (12B 9 GB, 26B-A4B 22 GB: better by ~0.05-0.1 on a blind test,
+  but they don't keep up with live speech next to Whisper on a 34 GB Mac).
+- **Glossary:** `glossary.txt` (`[lang]` sections, `source = target`). Terms are also learned from the stream and kept
+  in `learned_terms.tsv` (git-ignored); they reach the prompts after being seen twice. Edit or promote them by hand.
+- `--record DIR` saves each session's audio for offline replay: `uv run python test_client.py rec.wav --src auto --dst ru`.

@@ -18,6 +18,7 @@ async def main() -> None:
     p.add_argument("--src", default="he")
     p.add_argument("--dst", default="ru")
     p.add_argument("--tail-silence", type=float, default=2.0)
+    p.add_argument("--speed", type=float, default=1.0, help="replay faster than real time")
     a = p.parse_args()
 
     with wave.open(a.wav) as w:
@@ -39,7 +40,7 @@ async def main() -> None:
         chunk = 3200  # 100 ms
         for i in range(0, len(pcm), chunk):
             await ws.send(pcm[i:i + chunk])
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.1 / a.speed)
         await asyncio.sleep(6)
         await ws.close()
         await r
