@@ -24,7 +24,7 @@ import android.widget.Button
 import android.widget.FrameLayout
 
 /**
- * Opaque bottom band (covers burned-in subtitles) showing the newest translated lines.
+ * Opaque band placed over the app's own captions showing the newest translated lines.
  * [showMeter] adds a diagnostic dBFS strip on top.
  *
  * The window is normally non-focusable so the TV app keeps the remote. [summon] makes it focusable
@@ -33,6 +33,7 @@ import android.widget.FrameLayout
 class SubtitleOverlay(
     private val context: Context,
     private val showMeter: Boolean,
+    private var placement: Placement,
     private val onPause: () -> Unit,
 ) {
     private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -47,7 +48,6 @@ class SubtitleOverlay(
     fun show() {
         if (attached) return
         val d = context.resources.displayMetrics.density
-        val heightDp = TEXT_AREA_DP + if (showMeter) METER_DP else 0f
 
         root.addView(view, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         button.apply {
@@ -75,13 +75,34 @@ class SubtitleOverlay(
 
         params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
-            (heightDp * d).toInt(),
+            heightPx(),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             flags(interactive = false),
             PixelFormat.OPAQUE,
-        ).apply { gravity = Gravity.BOTTOM }
+        ).apply {
+            gravity = Gravity.BOTTOM
+            y = bottomPx()
+        }
         wm.addView(root, params)
         attached = true
+    }
+
+    private fun screenH() = context.resources.displayMetrics.heightPixels
+
+    private fun bottomPx() = (placement.bottomFrac * screenH()).toInt()
+
+    private fun heightPx() = (placement.heightFrac * screenH()).toInt() +
+        if (showMeter) (METER_DP * context.resources.displayMetrics.density).toInt() else 0
+
+    /** Moves the band, e.g. when another app comes to the front. */
+    fun setPlacement(p: Placement) {
+        if (p == placement) return
+        placement = p
+        val lp = params ?: return
+        if (!attached) return
+        lp.height = heightPx()
+        lp.y = bottomPx()
+        wm.updateViewLayout(root, lp)
     }
 
     fun update(level: AudioLevel) = view.setLevel(level)
@@ -241,7 +262,6 @@ class SubtitleOverlay(
             private set
 
         private const val INTERACTIVE_MS = 4_000L
-        private const val TEXT_AREA_DP = 112f
         private const val METER_DP = 72f
         private const val TEXT_SP = 30f
         private const val MIN_SP = 22f

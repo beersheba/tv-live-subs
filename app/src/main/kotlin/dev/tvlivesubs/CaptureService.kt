@@ -35,6 +35,7 @@ class CaptureService : Service() {
     private var activeJob: Job? = null
     private var overlay: SubtitleOverlay? = null
     private var showMeter = false
+    private var bandOverride: Placement? = null // adb tuning: --ef band_bottom/band_height
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -68,6 +69,12 @@ class CaptureService : Service() {
             return
         }
         showMeter = intent?.getBooleanExtra(EXTRA_METER, false) ?: false
+        bandOverride = intent?.takeIf { it.hasExtra(EXTRA_BAND_BOTTOM) || it.hasExtra(EXTRA_BAND_HEIGHT) }?.let {
+            Placement(
+                it.getFloatExtra(EXTRA_BAND_BOTTOM, Placements.DEFAULT.bottomFrac),
+                it.getFloatExtra(EXTRA_BAND_HEIGHT, Placements.DEFAULT.heightFrac),
+            )
+        }
         resume()
     }
 
@@ -77,11 +84,13 @@ class CaptureService : Service() {
         state = State.ACTIVE
         notify("Capturing audio")
         activeJob = scope.launch {
-            val overlay = SubtitleOverlay(this@CaptureService, showMeter, onPause = ::pause).also { it.show() }
+            val overlay = SubtitleOverlay(this@CaptureService, showMeter, placementFor(ForegroundApp.pkg.value), onPause = ::pause)
+                .also { it.show() }
             this@CaptureService.overlay = overlay
             val client = TranslationClient(BuildConfig.SERVER_URL, BuildConfig.SRC_LANG, BuildConfig.DST_LANG, this)
                 .also { it.start() }
             try {
+                launch { ForegroundApp.pkg.collect { overlay.setPlacement(placementFor(it)) } }
                 val presenter = SubtitlePresenter(this, client.commits)
                 launch {
                     combine(presenter.visible, client.link) { lines, link -> lines to link }
@@ -95,6 +104,8 @@ class CaptureService : Service() {
             }
         }
     }
+
+    private fun placementFor(pkg: String?) = bandOverride ?: Placements.forPackage(pkg)
 
     /** Releases everything but the projection, so resume() needs no consent dialog. */
     private fun pause() {
@@ -203,6 +214,8 @@ class CaptureService : Service() {
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_DATA = "data"
         const val EXTRA_METER = "meter"
+        const val EXTRA_BAND_BOTTOM = "band_bottom"
+        const val EXTRA_BAND_HEIGHT = "band_height"
 
         private const val TAG = "LevelMeter"
         private const val CHANNEL_ID = "capture"

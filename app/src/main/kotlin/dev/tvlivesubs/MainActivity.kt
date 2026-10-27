@@ -19,17 +19,28 @@ class MainActivity : Activity() {
 
     /** `adb shell am start ... --ez meter true` adds the diagnostic level strip. */
     private var meter = false
+    private var extras = Bundle()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        meter = intent.getBooleanExtra(CaptureService.EXTRA_METER, false)
+        takeExtras(intent)
         toggle()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        meter = intent.getBooleanExtra(CaptureService.EXTRA_METER, false)
+        takeExtras(intent)
         toggle()
+    }
+
+    /** `--ez meter true`, `--ef band_bottom 0.2 --ef band_height 0.18` (fractions of the screen height). */
+    private fun takeExtras(intent: Intent) {
+        meter = intent.getBooleanExtra(CaptureService.EXTRA_METER, false)
+        extras = Bundle().apply {
+            for (key in listOf(CaptureService.EXTRA_BAND_BOTTOM, CaptureService.EXTRA_BAND_HEIGHT)) {
+                if (intent.hasExtra(key)) putFloat(key, intent.getFloatExtra(key, 0f))
+            }
+        }
     }
 
     private fun toggle() {
@@ -68,7 +79,8 @@ class MainActivity : Activity() {
                 Intent(this, CaptureService::class.java)
                     .putExtra(CaptureService.EXTRA_RESULT_CODE, resultCode)
                     .putExtra(CaptureService.EXTRA_DATA, data)
-                    .putExtra(CaptureService.EXTRA_METER, meter),
+                    .putExtra(CaptureService.EXTRA_METER, meter)
+                    .putExtras(extras),
             )
         } else {
             Log.w("LevelMeter", "projection consent denied (resultCode=$resultCode)")

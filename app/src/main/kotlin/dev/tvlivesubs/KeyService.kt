@@ -53,7 +53,13 @@ class KeyService : AccessibilityService() {
 
     private fun command(action: String) = startService(Intent(this, CaptureService::class.java).setAction(action))
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val pkg = event.packageName?.toString() ?: return
+        // Our own windows (overlay, launch trampoline), system UI and keyboards aren't "the app in front".
+        if (pkg == packageName || pkg == "com.android.systemui" || "inputmethod" in pkg) return
+        ForegroundApp.pkg.value = pkg
+    }
 
     override fun onInterrupt() = Unit
 

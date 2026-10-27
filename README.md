@@ -44,3 +44,25 @@ uv run tvsubs-server --preload auto he
 - **Glossary:** `glossary.txt` (`[lang]` sections, `source = target`). Terms are also learned from the stream and kept
   in `learned_terms.tsv` (git-ignored); they reach the prompts after being seen twice. Edit or promote them by hand.
 - `--record DIR` saves each session's audio for offline replay: `uv run python test_client.py rec.wav --src auto --dst ru`.
+
+### Where the models live
+
+Everything is a re-downloadable cache, nothing is bundled in the repo:
+
+| What | Where | Size |
+|---|---|---|
+| Whisper (ggml): ivrit-ai Hebrew, small (language ID), large-v3-turbo (other languages) | `~/.cache/tvsubs/` (`TVSUBS_CACHE`) | ~3.7 GB |
+| Local translator (Gemma 4 via mlx-lm), NLLB fallback | `~/.cache/huggingface/hub/` (`HF_HOME` / `HF_HUB_CACHE`) | 7.5 GB for E4B, 0.6 GB NLLB |
+
+To keep them elsewhere (e.g. an external SSD) set `HF_HOME` and `TVSUBS_CACHE` before starting the server.
+`~/.cache` is **included** in Time Machine backups by default: `tmutil addexclusion -p ~/.cache/huggingface ~/.cache/tvsubs`.
+Unused models can be removed with `huggingface-cli delete-cache` or by deleting the folders above.
+
+### Band placement
+
+The translation band sits over the app's own captions, per app (`Placements.kt`, fractions of the screen height;
+the foreground app comes from the accessibility service). Tune live without rebuilding:
+
+```sh
+adb -s $DEV shell am start -n dev.tvlivesubs/.MainActivity --ef band_bottom 0.205 --ef band_height 0.185
+```
